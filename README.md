@@ -7,6 +7,7 @@ Control Flip Flat es una interfaz gráfica para gestionar un panel de iluminaci�
 
 <img src="./images/scr1.png" width="400" height="300">
 <img src="./images/scr2.png" width="400" height="300">
+
 ## Funcionalidades
 
 - **Ventana maximizada al iniciar**, con posibilidad de restaurar, minimizar y redimensionar, según las capacidades del gestor de ventanas.
