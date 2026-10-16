@@ -4,6 +4,9 @@
 
 Control Flip Flat es una interfaz gráfica para gestionar un panel de iluminación **Optec / Alnitak Flip Flat** compatible con el controlador INDI `indi_flipflat`. Está orientada a la captura de *flats* en astronomía y permite controlar la luz, su intensidad y los perfiles de brillo asociados a filtros fotográficos.
 
+
+<img src="./images/scr1.png" width="400" height="300">
+<img src="./images/scr2.png" width="400" height="300">
 ## Funcionalidades
 
 - **Ventana maximizada al iniciar**, con posibilidad de restaurar, minimizar y redimensionar, según las capacidades del gestor de ventanas.
