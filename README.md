@@ -1,144 +1,130 @@
 # Control Flip Flat
 
-**Versión 1.0.0** · Aplicación de escritorio para Linux (Ubuntu) · Python 3 / Tkinter / INDI
+**Versión 1.0.0** · Aplicación de escritorio para Linux (Ubuntu) · Python / Tkinter / INDI
 
-Control Flip Flat es una interfaz gráfica para manejar la iluminación de un panel **Optec/Alnitak Flip Flat** mediante el driver **`indi_flipflat`** del ecosistema INDI. Permite gestionar el servidor, conectarse al dispositivo, encender y apagar la iluminación y ajustar el brillo sin utilizar manualmente la terminal.
+Control Flip Flat es una interfaz gráfica para gestionar un panel de iluminación **Optec / Alnitak Flip Flat** compatible con el controlador INDI `indi_flipflat`. Está orientada a la captura de *flats* en astronomía y permite controlar la luz, su intensidad y los perfiles de brillo asociados a filtros fotográficos.
 
-> Esta publicación **1.0.0** corresponde al programa `control_flipflat_v8_3_puerto.py`. La numeración 1.0.0 identifica la versión del repositorio; no modifica el protocolo ni la versión del driver INDI.
+## Funcionalidades
 
-## Características
-
-- **Interfaz redimensionable**, con controles habituales de minimizar y maximizar de Linux.
-- **Modo nocturno rojo**, activable y desactivable desde la interfaz, con fondo oscuro y controles adaptados para observación astronómica.
-- **Servidor INDI:** detecta un servidor existente en `127.0.0.1:7624` o inicia uno con `indi_flipflat`. Al finalizar, solo detiene el servidor si lo inició la propia aplicación.
-- **Puerto serie configurable:** campo editable para seleccionar una ruta como `/dev/ttyUSB0` o `/dev/serial/by-id/...` antes de conectar.
-- **Conexión al dispositivo** identificado en INDI como `Flip Flat`.
-- **Encendido y apagado independientes** de la iluminación, manteniendo la conexión cuando se usa «Apagar luz».
-- **Indicador LED de estado** basado en la información publicada por INDI; distingue encendido, apagado y estado no confirmado.
-- **Brillo de 0 a 255**, ajustable mediante botones `+` / `−` o un deslizador. Muestra el valor y consulta su confirmación al servidor.
-- **Actualización manual** del estado del panel.
-- **Finalización de sesión:** intenta apagar la iluminación, desconectar el dispositivo y detener el servidor iniciado por el programa.
-- **Registro de actividad** en pantalla y en un archivo rotativo para facilitar el diagnóstico.
-- **Operaciones INDI en segundo plano**, evitando bloquear la ventana durante las consultas y cambios de estado.
+- **Ventana maximizada al iniciar**, con posibilidad de restaurar, minimizar y redimensionar, según las capacidades del gestor de ventanas.
+- **Detección orientativa del puerto USB serie** al arrancar: prioriza dispositivos en `/dev/serial/by-id/` y adaptadores CH340/CH341; permite modificar manualmente la ruta. La detección **no verifica por sí sola** que el dispositivo encontrado sea el panel.
+- Inicio del servidor INDI local (`127.0.0.1:7624`) con el controlador `indi_flipflat`, o reutilización de uno ya existente.
+- Conexión al dispositivo **Flip Flat**, encendido y apagado de la luz, consulta de estado e indicador visual.
+- Regulación del brillo de **0 a 255**, mediante deslizador y botones de ajuste.
+- **Modo nocturno rojo**, activable desde la interfaz.
+- **Nueve perfiles de brillo**: L, R, G, B, Hα, O III, S II, Bessel-V y UV/IR.
+- Desplegable de filtro, botón **Aplicar perfil** y botón **Guardar brillo actual**.
+- Aplicación automática del brillo almacenado al seleccionar un filtro mientras el dispositivo está conectado, y recuperación del perfil seleccionado al conectar.
+- Guardado automático del brillo confirmado por INDI en el perfil seleccionado.
+- Registro de actividad y errores en un fichero rotativo.
+- Finalización de sesión con intento de apagado y desconexión. El programa solo detiene el servidor INDI que haya iniciado él mismo.
 
 ## Requisitos
 
-- Linux con entorno gráfico (desarrollado para Ubuntu).
-- Python 3 con **Tkinter**.
-- Servidor y utilidades INDI: `indiserver`, `indi_getprop`, `indi_setprop`.
-- Driver INDI **`indi_flipflat`**.
-- Panel compatible conectado por USB/serie y permisos de acceso al dispositivo.
+- Ubuntu o distribución Linux con Python 3 y Tkinter.
+- INDI con el driver `indi_flipflat` y los comandos `indiserver`, `indi_getprop` e `indi_setprop` disponibles en `PATH`.
+- Panel compatible conectado por USB serie y permisos de acceso al dispositivo.
 
-En sistemas Ubuntu con paquetes disponibles, puedes instalar las dependencias básicas mediante:
+En Ubuntu, una instalación inicial puede ser:
 
 ```bash
 sudo apt update
 sudo apt install python3 python3-tk indi-bin
 ```
 
-El paquete que proporciona `indi_flipflat` puede variar según la distribución o los repositorios INDI instalados. Comprueba la disponibilidad de los ejecutables:
-
-```bash
-which python3 indiserver indi_flipflat indi_getprop indi_setprop
-```
+> La disponibilidad del driver `indi_flipflat` depende de los paquetes y repositorios INDI instalados. Compruébalo con `command -v indi_flipflat` antes de ejecutar la aplicación.
 
 ## Instalación y ejecución
 
-1. Descarga o clona el repositorio.
-2. Sitúate en el directorio que contiene el script.
+1. Copia `control_flipflat_1_0_0.py` en el repositorio.
+2. Conecta el panel al ordenador.
 3. Ejecuta:
 
 ```bash
-python3 control_flipflat_v8_3_puerto.py
+python3 control_flipflat_1_0_0.py
 ```
 
-No se necesitan paquetes Python externos para la interfaz y la comunicación: se emplean la biblioteca estándar y las utilidades INDI instaladas en el sistema.
+La ventana intentará abrirse maximizada. El programa buscará puertos serie USB y propondrá uno cuando pueda identificar un candidato. **Revisa la ruta antes de pulsar Conectar**, especialmente si tienes conectados otros dispositivos USB serie.
 
-## Uso
+Si necesitas localizar el puerto manualmente:
 
-1. Conecta y alimenta el panel Flat Flat mediante USB/serie.
-2. Pulsa **Iniciar servidor**. Si ya existe un servidor INDI en el puerto 7624, el programa intentará reutilizarlo.
-3. Introduce el **puerto serie** adecuado en el apartado del dispositivo.
-4. Pulsa **Conectar** y espera la confirmación.
-5. Utiliza **Encender** y **Apagar luz** para controlar la iluminación.
-6. Ajusta el brillo con los botones `+` / `−` o el deslizador (rango 0–255).
-7. Pulsa **Actualizar estado** si quieres consultar de nuevo el valor y estado reportados por INDI.
-8. Al terminar, utiliza **Finalizar sesión** para apagar, desconectar y cerrar el servidor propio.
+```bash
+ls -l /dev/serial/by-id/
+ls /dev/ttyUSB* /dev/ttyACM* 2>/dev/null
+```
 
-### Puerto serie
+En algunas instalaciones, el usuario debe pertenecer al grupo con permisos para acceder al puerto serie (habitualmente `dialout`).
 
-El valor inicial configurado en el código es:
+## Uso básico
+
+1. Comprueba o edita el **puerto serie**.
+2. Inicia el servidor INDI y conecta el panel.
+3. Selecciona un filtro en el desplegable.
+4. Ajusta el brillo con el deslizador o los botones `+` / `−`.
+5. Pulsa **Guardar brillo actual** para registrar explícitamente la intensidad leída desde INDI, o utiliza **Aplicar perfil** para restaurar el valor almacenado.
+6. Enciende el panel para obtener las tomas de calibración y apágalo al terminar.
+7. Finaliza la sesión desde la aplicación.
+
+Los perfiles comienzan sin valores definidos. El brillo adecuado debe determinarse experimentalmente para cada combinación de filtro, cámara y tiempo de exposición; no hay valores universales.
+
+## Archivos de configuración y registro
+
+Los perfiles se guardan en:
 
 ```text
-/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0
+~/.config/control_flipflat/profiles.json
 ```
 
-Puedes cambiarlo en la interfaz **antes de conectar**. Otras rutas habituales son `/dev/ttyUSB0` o `/dev/serial/by-id/...`. La ruta elegida se utiliza para configurar la propiedad INDI `DEVICE_PORT.PORT` cuando el dispositivo todavía no está conectado.
+Ejemplo ilustrativo (los números no son valores recomendados):
 
-> **Nota:** el puerto seleccionado no se guarda entre ejecuciones en esta versión. Si el dispositivo ya está conectado a un servidor INDI externo, el programa reutiliza esa conexión y no cambia automáticamente su puerto.
+```json
+{
+  "version": 1,
+  "selected": "L",
+  "values": {
+    "L": 140,
+    "R": 125,
+    "G": 130,
+    "B": 155,
+    "Hα": 220,
+    "O III": 210,
+    "S II": 235,
+    "Bessel-V": 145,
+    "UV/IR": 120
+  }
+}
+```
 
-### Modo nocturno
-
-Activa la casilla **Modo nocturno (rojo)** para cambiar la paleta visual sin modificar la iluminación física del panel. Puedes alternar de modo durante una sesión.
-
-## Comunicación INDI
-
-El programa utiliza `indi_getprop` e `indi_setprop` y las siguientes propiedades del dispositivo `Flip Flat`:
-
-| Función | Propiedad |
-| --- | --- |
-| Conectar | `CONNECTION.CONNECT` |
-| Desconectar | `CONNECTION.DISCONNECT` |
-| Puerto serie | `DEVICE_PORT.PORT` |
-| Encender luz | `FLAT_LIGHT_CONTROL.FLAT_LIGHT_ON` |
-| Apagar luz | `FLAT_LIGHT_CONTROL.FLAT_LIGHT_OFF` |
-| Brillo | `FLAT_LIGHT_INTENSITY.FLAT_LIGHT_INTENSITY_VALUE` |
-| Estado de luz | `Status.Light` |
-
-El servidor INDI está configurado en el código para escuchar en `127.0.0.1:7624`.
-
-## Registro de actividad
-
-Los eventos y errores se muestran en la ventana y se guardan en:
+El registro de ejecución se almacena en:
 
 ```text
 ~/.local/state/control_flipflat/control_flipflat.log
 ```
 
-El registro utiliza rotación de archivos para limitar su tamaño.
-
 ## Resolución de problemas
 
-**No se puede iniciar INDI:** comprueba que `indiserver` e `indi_flipflat` están instalados y que el puerto TCP 7624 no está ocupado por un proceso incompatible.
+- **No aparece el puerto:** comprueba el cable USB, los permisos y los dispositivos de `/dev/serial/by-id/`. Si hay varios adaptadores, selecciona el correcto manualmente.
+- **No conecta INDI:** verifica que `indi_flipflat` está instalado, que el servidor escucha en el puerto TCP `7624` y que el dispositivo está disponible.
+- **No cambia el brillo:** comprueba la conexión y las propiedades INDI del dispositivo. El programa necesita que el driver publique `FLAT_LIGHT_INTENSITY`.
+- **La ventana no se maximiza:** algunos entornos gráficos, especialmente bajo Wayland, pueden gestionar la maximización de forma distinta.
+- **El perfil no se aplica:** verifica que el filtro tiene un valor guardado y que el panel está conectado.
 
-**No conecta el panel:** verifica el cable USB, la alimentación, los permisos del puerto serie y la ruta indicada en el campo **Puerto serie**. Puedes consultar los puertos disponibles con:
+## Limitaciones
 
-```bash
-ls -l /dev/serial/by-id/
-ls -l /dev/ttyUSB*
-```
-
-**No se encuentran propiedades o falla el brillo:** asegúrate de que el dispositivo está conectado y de que el driver publica las propiedades esperadas:
-
-```bash
-indi_getprop -h 127.0.0.1 -p 7624 'Flip Flat.*.*'
-```
-
-**Errores o tiempos de espera:** revisa el registro de actividad. Las consultas INDI tienen tiempos de espera y reintentos; su funcionamiento depende también de la versión del driver y del estado físico del dispositivo.
-
-## Limitaciones de la versión 1.0.0
-
-- La configuración del puerto y la selección del modo nocturno **no se guardan** automáticamente en un archivo de preferencias.
-- El programa no adquiere imágenes de cámara ni calcula exposiciones automáticas para flats.
-- La comunicación se realiza mediante utilidades INDI de línea de comandos, no mediante una conexión INDI persistente propia.
-- El programa se ha diseñado para el dispositivo publicado como **`Flip Flat`** y las propiedades indicadas; otros controladores pueden requerir ajustes.
-
-## Estado del proyecto
-
-Versión **1.0.0**: primera versión para publicación en GitHub, basada en la evolución de la aplicación hasta la interfaz con modo nocturno y puerto serie configurable.
-
-La comunicación y el control del hardware deben verificarse con el modelo concreto y la instalación INDI utilizada.
+La detección del puerto se basa en nombres y cantidad de dispositivos serie disponibles; **no identifica inequívocamente el hardware**. La aplicación está diseñada para el dispositivo INDI denominado `Flip Flat` y las propiedades específicas del driver utilizado. La comunicación real debe verificarse con cada instalación.
 
 ## Licencia
 
-**Pendiente de definir.** Antes de publicar el repositorio, añade un archivo `LICENSE` con la licencia que desees utilizar.
+**Control Flip Flat 1.0.0 se publica bajo Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0).**
+
+Puedes compartir y adaptar el material, incluso con fines comerciales, siempre que atribuyas la autoría, indiques los cambios y distribuyas las adaptaciones bajo la misma licencia, de acuerdo con sus condiciones.
+
+- Texto legal: https://creativecommons.org/licenses/by-sa/4.0/legalcode
+- Resumen: https://creativecommons.org/licenses/by-sa/4.0/deed.es
+- Identificador SPDX: `CC-BY-SA-4.0`
+
+**Para el repositorio:** añade también un archivo `LICENSE` con el texto íntegro de la licencia y conserva los avisos de atribución pertinentes. Creative Commons recomienda normalmente licencias específicas de software para código fuente; aquí se utiliza CC BY-SA 4.0 por decisión del proyecto.
+
+## Versión
+
+**1.0.0** — Primera versión pública: control INDI del panel, modo nocturno, detección orientativa del puerto, ventana maximizada y perfiles persistentes por filtro.
