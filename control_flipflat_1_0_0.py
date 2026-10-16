@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Control Flip Flat v8.1 — Ubuntu / INDI 1.9.9+.
+"""Control Flip Flat 1.0.0 — Ubuntu / INDI.
 
 Instalar: sudo apt install python3-tk indi-bin
 Requiere driver indi_flipflat y herramientas indi_getprop / indi_setprop.
 
-Las consultas se hacen sin patrón de propiedades (compatible con INDI 1.9.9),
-con -t 2 y lectura parcial cuando indi_getprop no termina espontáneamente.
+Incluye perfiles de brillo, modo nocturno y detección de puertos USB serie.
 """
 
 import concurrent.futures
@@ -13,6 +12,7 @@ import datetime as dt
 import json
 import os
 import logging
+import glob
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import shutil
@@ -89,6 +89,25 @@ logger.setLevel(logging.INFO)
 handler = RotatingFileHandler(LOG_FILE, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
 handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 logger.addHandler(handler)
+
+
+def detect_serial_port():
+    """Busca puertos probables, sin afirmar que sean el Flip Flat."""
+    by_id = sorted(glob.glob('/dev/serial/by-id/*'))
+    candidates = [p for p in by_id if Path(p).exists()]
+    # Preferir el adaptador CH340/CH341 previamente usado con este panel.
+    preferred = [p for p in candidates if any(
+        token in p.lower() for token in ('1a86', 'ch340', 'ch341', 'flip', 'alnitak', 'optec'))]
+    if preferred:
+        return preferred[0], 'coincidencia probable por identificador USB'
+    if len(candidates) == 1:
+        return candidates[0], 'único dispositivo serie USB identificado'
+    fallback = sorted(glob.glob('/dev/ttyUSB[0-9]*') + glob.glob('/dev/ttyACM[0-9]*'))
+    if len(fallback) == 1:
+        return fallback[0], 'único puerto USB serie disponible'
+    if candidates or fallback:
+        return None, 'varios dispositivos serie; selecciona el puerto manualmente'
+    return None, 'no se detectaron puertos USB serie'
 
 
 class IndiError(Exception):
@@ -322,9 +341,10 @@ class Controller:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Control Flip Flat v9.1 — perfiles de brillo")
+        self.title("Control Flip Flat 1.0.0 — perfiles de brillo")
         self.geometry("850x730")
         self.minsize(680, 620)
+        self.after_idle(self.maximize_window)
         self.controller = Controller()
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self.pending = None
@@ -343,6 +363,24 @@ class App(tk.Tk):
         self.apply_theme()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.after(100, self.initial_check)
+        self.after(150, self.detect_port_on_startup)
+
+    def maximize_window(self):
+        try:
+            self.attributes('-zoomed', True)  # X11 / gestores compatibles
+        except tk.TclError:
+            try:
+                self.state('zoomed')
+            except tk.TclError:
+                self.geometry(f"{self.winfo_screenwidth()}x{self.winfo_screenheight()}+0+0")
+
+    def detect_port_on_startup(self):
+        port, reason = detect_serial_port()
+        if port:
+            self.serial_port_var.set(port)
+            self.log(f"Puerto serie detectado: {port} ({reason}). Confirma antes de conectar.")
+        else:
+            self.log(f"Detección de puerto: {reason}. Puerto editable manualmente.")
 
     def _build(self):
         self.columnconfigure(0, weight=1)
@@ -350,7 +388,7 @@ class App(tk.Tk):
         header = ttk.Frame(self)
         header.grid(row=0, column=0, padx=20, pady=(16, 10), sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="Optec / Alnitak Flip Flat — v9.1",
+        ttk.Label(header, text="Optec / Alnitak Flip Flat — 1.0.0",
                   font=("Sans", 19, "bold")).grid(row=0, column=0, sticky="w")
         self.night_toggle = ttk.Checkbutton(
             header, text="Modo nocturno (rojo)", variable=self.night_mode,
