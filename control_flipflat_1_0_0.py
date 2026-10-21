@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Control Flip Flat 1.0.0 — Ubuntu / INDI.
+"""Control Flip Flat 1.1.1 — Ubuntu / INDI (cliente rápido).
 
 Instalar: sudo apt install python3-tk indi-bin
-Requiere driver indi_flipflat y herramientas indi_getprop / indi_setprop.
+Requiere driver indi_flipflat. Usa una conexión TCP INDI persistente.
 
 Incluye perfiles de brillo, modo nocturno y detección de puertos USB serie.
 """
@@ -20,6 +20,7 @@ import socket
 import subprocess
 import threading
 import time
+import xml.etree.ElementTree as ET
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -115,50 +116,64 @@ class IndiError(Exception):
 
 
 class Controller:
+    """Cliente INDI XML persistente: sin lanzar procesos en cada operación."""
+
     def __init__(self):
         self.owned = None
         self.serial_port = DEFAULT_PORT
         self.cache = {}
-        self.lock = threading.RLock()
+        self.sock = None
+        self.condition = threading.Condition()
+        self.reader = None
+        self.last_update = {}
+        self.error = None
 
     @staticmethod
     def prerequisites():
-        missing = [x for x in ("indiserver", DRIVER, "indi_getprop", "indi_setprop")
-                   if shutil.which(x) is None]
+        missing = [x for x in ("indiserver", DRIVER) if shutil.which(x) is None]
         if missing:
             raise IndiError("Faltan herramientas INDI: " + ", ".join(missing))
 
     @staticmethod
     def server_alive():
         try:
-            with socket.create_connection((HOST, PORT), timeout=0.6):
+            with socket.create_connection((HOST, PORT), timeout=0.25):
                 return True
         except OSError:
             return False
 
     def start(self):
         if self.server_alive():
-            logger.info("Se reutiliza un servidor INDI externo")
             return "Servidor existente"
         self.owned = subprocess.Popen(
             ["indiserver", "-p", str(PORT), DRIVER],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            start_new_session=True,
+            start_new_session=True
         )
-        until = time.monotonic() + 10
+        until = time.monotonic() + 8
         while time.monotonic() < until:
             if self.server_alive():
-                logger.info("Servidor INDI iniciado PID=%s", self.owned.pid)
                 return "Servidor iniciado"
             if self.owned.poll() is not None:
-                rc = self.owned.returncode
-                self.owned = None
-                raise IndiError(f"indiserver terminó con código {rc}")
-            time.sleep(0.15)
+                raise IndiError(f"indiserver terminó con código {self.owned.returncode}")
+            time.sleep(0.1)
         self.stop_owned()
-        raise IndiError("El servidor no abrió el puerto TCP 7624")
+        raise IndiError("El servidor INDI no respondió")
+
+    def _drop_socket(self):
+        sock, self.sock = self.sock, None
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
 
     def stop_owned(self):
+        self._drop_socket()
         if self.owned is not None:
             if self.owned.poll() is None:
                 self.owned.terminate()
@@ -167,90 +182,123 @@ class Controller:
                 except subprocess.TimeoutExpired:
                     self.owned.kill()
                     self.owned.wait(timeout=2)
-                logger.info("Servidor INDI propio detenido")
             self.owned = None
 
-    @staticmethod
-    def _execute(argv, timeout=5, partial=False):
-        """Subprocess sin shell; admite salida parcial para indi_getprop."""
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        expired = False
+    def _reader_loop(self, sock):
+        parser = ET.XMLPullParser(events=("end",))
+        parser.feed("<root>")
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            expired = True
-            proc.terminate()
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    raise OSError("Servidor INDI desconectado")
+                parser.feed(chunk.decode("utf-8", errors="replace"))
+                for _, node in parser.read_events():
+                    tag = node.tag
+                    if tag not in ("defSwitchVector", "setSwitchVector",
+                                   "defNumberVector", "setNumberVector",
+                                   "defTextVector", "setTextVector",
+                                   "defLightVector", "setLightVector",
+                                   "delProperty"):
+                        continue
+                    if node.get("device") != DEVICE:
+                        node.clear()
+                        continue
+                    prop = node.get("name")
+                    if not prop:
+                        node.clear()
+                        continue
+                    with self.condition:
+                        if tag == "delProperty":
+                            for key in list(self.cache):
+                                if key.startswith(f"{DEVICE}.{prop}."):
+                                    self.cache.pop(key, None)
+                        else:
+                            for item in node:
+                                name = item.get("name")
+                                if name:
+                                    key = f"{DEVICE}.{prop}.{name}"
+                                    self.cache[key] = (item.text or "").strip()
+                                    self.last_update[key] = time.monotonic()
+                        self.condition.notify_all()
+                    node.clear()
+        except (OSError, ET.ParseError, ValueError) as exc:
+            with self.condition:
+                if self.sock is sock:
+                    self.error = str(exc)
+                    self.sock = None
+                    self.condition.notify_all()
             try:
-                stdout, stderr = proc.communicate(timeout=1)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                stdout, stderr = proc.communicate(timeout=1)
-        out = stdout.decode("utf-8", errors="replace")
-        err = stderr.decode("utf-8", errors="replace")
-        if expired and not (partial and out.strip()):
-            raise IndiError("Tiempo de espera de INDI: " + " ".join(argv))
-        if not expired and proc.returncode != 0 and not (partial and out.strip()):
-            raise IndiError(err.strip() or out.strip() or "Error: " + " ".join(argv))
-        return out
+                sock.close()
+            except OSError:
+                pass
+
+    def _ensure_client(self):
+        if self.sock is not None:
+            return
+        try:
+            sock = socket.create_connection((HOST, PORT), timeout=2)
+            sock.settimeout(None)
+        except OSError as exc:
+            raise IndiError(f"No se puede conectar al servidor INDI: {exc}") from exc
+        with self.condition:
+            self.sock = sock
+            self.error = None
+            self.cache.clear()
+            self.last_update.clear()
+        self.reader = threading.Thread(target=self._reader_loop, args=(sock,), daemon=True)
+        self.reader.start()
+        self._send('<getProperties version="1.7" device="Flip Flat"/>')
+
+    def _send(self, payload):
+        sock = self.sock
+        if sock is None:
+            raise IndiError("Conexión INDI perdida")
+        try:
+            sock.sendall((payload + "\n").encode("utf-8"))
+        except OSError as exc:
+            self._drop_socket()
+            raise IndiError(f"Error enviando comando INDI: {exc}") from exc
+
+    def _wait_for(self, predicate, timeout, label):
+        deadline = time.monotonic() + timeout
+        with self.condition:
+            while True:
+                if predicate(self.cache):
+                    return dict(self.cache)
+                if self.sock is None:
+                    raise IndiError("Conexión INDI perdida: " + str(self.error))
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise IndiError("Tiempo de espera: " + label)
+                self.condition.wait(left)
 
     def properties(self):
-        """Consulta las propiedades del dispositivo con un patrón INDI válido.
-
-        INDI 1.9.9 exige tres componentes en los patrones. El patrón
-        explícito «Flip Flat.*.*» evita el *.*.* implícito y reduce
-        las respuestas ajenas al dispositivo.
-        """
-        if not self.server_alive():
-            raise IndiError("No hay servidor INDI escuchando en 127.0.0.1:7624")
-
-        last_error = None
-        for attempt in range(3):
-            try:
-                out = self._execute(
-                    ["indi_getprop", "-h", HOST, "-p", str(PORT),
-                     "-t", "4", f"{DEVICE}.*.*"],
-                    timeout=7, partial=True
-                )
-                parsed = {}
-                for line in out.splitlines():
-                    if "=" not in line:
-                        continue
-                    key, val = line.split("=", 1)
-                    if key.startswith(DEVICE + "."):
-                        parsed[key] = val.strip()
-                if parsed:
-                    self.cache = parsed
-                    return parsed
-                last_error = "La consulta no devolvió propiedades del dispositivo"
-            except IndiError as exc:
-                last_error = str(exc)
-            if attempt < 2:
-                time.sleep(0.4)
-        raise IndiError(
-            "No se han podido leer las propiedades del Flip Flat "
-            "tras tres intentos.\n" + str(last_error)
-        )
+        self._ensure_client()
+        return self._wait_for(lambda p: CONN in p, 4, "propiedades INDI")
 
     def set(self, key, value):
-        if not self.server_alive():
-            raise IndiError("El servidor INDI se ha detenido")
-        # No añadir comillas al argumento: subprocess no invoca un shell.
-        self._execute(
-            ["indi_setprop", "-h", HOST, "-p", str(PORT), f"{key}={value}"],
-            timeout=6
+        self._ensure_client()
+        bits = key.split(".", 2)
+        if len(bits) != 3:
+            raise IndiError("Nombre de propiedad INDI inválido")
+        _, prop, element = bits
+        kind = "Number" if key == BRIGHT else "Text" if key == SERIAL else "Switch"
+        text = ET.escape if hasattr(ET, "escape") else None
+        from xml.sax.saxutils import escape
+        self._send(
+            f'<new{kind}Vector device="{escape(DEVICE)}" name="{escape(prop)}">'
+            f'<one{kind} name="{escape(element)}">{escape(str(value))}</one{kind}>'
+            f'</new{kind}Vector>'
         )
         logger.info("INDI %s=%s", key, value)
 
-    def wait_value(self, key, expected, timeout=9):
-        until = time.monotonic() + timeout
-        last = None
-        while time.monotonic() < until:
-            props = self.properties()
-            last = props.get(key)
-            if last == expected:
-                return props
-            time.sleep(0.15)
-        raise IndiError(f"Sin confirmación de {key}={expected}; valor recibido: {last!r}")
+    def wait_value(self, key, expected, timeout=5, since=None):
+        return self._wait_for(
+            lambda p: p.get(key) == expected and
+            (since is None or self.last_update.get(key, 0) >= since),
+            timeout, f"{key}={expected}"
+        )
 
     @staticmethod
     def snapshot(props):
@@ -273,20 +321,15 @@ class Controller:
 
     def connect(self):
         props = self.properties()
-        if CONN not in props:
-            raise IndiError("El driver Flip Flat no publica CONNECTION.CONNECT")
-        if props[CONN] != "On":
+        if props.get(CONN) != "On":
             if SERIAL in props and self.serial_port:
                 self.set(SERIAL, self.serial_port)
             self.set(CONN, "On")
-            props = self.wait_value(CONN, "On", timeout=12)
-        missing = [key for key in (ON, OFF, BRIGHT) if key not in props]
-        if missing:
-            props = self.properties()
-            missing = [key for key in (ON, OFF, BRIGHT) if key not in props]
-        if missing:
-            raise IndiError("Conectado, pero faltan propiedades:\n" + "\n".join(missing))
-        logger.info("Flip Flat conectado")
+            props = self.wait_value(CONN, "On", timeout=8)
+        props = self._wait_for(
+            lambda p: all(k in p for k in (ON, OFF, BRIGHT)),
+            4, "controles del panel"
+        )
         return self.snapshot(props)
 
     def refresh(self):
@@ -295,13 +338,46 @@ class Controller:
             raise IndiError("Flip Flat desconectado")
         return self.snapshot(props)
 
+    @staticmethod
+    def _same_brightness(raw, expected):
+        try:
+            return abs(float(raw) - float(expected)) < 0.01
+        except (ValueError, TypeError):
+            return False
+
     def set_brightness(self, value):
         value = max(0, min(255, int(value)))
         props = self.properties()
         if props.get(CONN) != "On" or BRIGHT not in props:
             raise IndiError("No está disponible el control de brillo")
+        if self._same_brightness(props.get(BRIGHT), value):
+            return self.snapshot(props)
+        since = time.monotonic()
         self.set(BRIGHT, value)
-        props = self.wait_value(BRIGHT, str(value), timeout=8)
+        try:
+            props = self._wait_for(
+                lambda p: self._same_brightness(p.get(BRIGHT), value)
+                and self.last_update.get(BRIGHT, 0) >= since,
+                3.5, f"confirmación de brillo {value}"
+            )
+        except IndiError as exc:
+            # Solicitar una actualización puntual al servidor antes de concluir
+            # que el controlador no confirmó la operación.
+            self._send('<getProperties version="1.7" device="Flip Flat" '
+                       'name="FLAT_LIGHT_INTENSITY"/>')
+            try:
+                props = self._wait_for(
+                    lambda p: self._same_brightness(p.get(BRIGHT), value)
+                    and self.last_update.get(BRIGHT, 0) >= since,
+                    1.5, f"lectura de brillo {value}"
+                )
+            except IndiError:
+                actual = self.cache.get(BRIGHT, "sin respuesta")
+                raise IndiError(
+                    f"No se ha confirmado el brillo {value}. "
+                    f"Último valor comunicado por INDI: {actual}. "
+                    "Comprueba si el panel cambió realmente de intensidad."
+                ) from exc
         return self.snapshot(props)
 
     def set_light(self, enabled):
@@ -311,29 +387,26 @@ class Controller:
         key = ON if enabled else OFF
         if key not in props:
             raise IndiError("No está disponible el control de iluminación")
-        self.set(key, "On")
         target = "On" if enabled else "Off"
-        until = time.monotonic() + 8
-        while time.monotonic() < until:
-            props = self.properties()
-            if (props.get(LIGHT) == target or
-                    (LIGHT not in props and props.get(key) == "On")):
-                return self.snapshot(props)
-            time.sleep(0.15)
-        raise IndiError(f"No se confirmó el estado de la luz: {target}")
+        if props.get(LIGHT) == target:
+            return self.snapshot(props)
+        since = time.monotonic()
+        self.set(key, "On")
+        props = self._wait_for(
+            lambda p: (p.get(LIGHT) == target and
+                       self.last_update.get(LIGHT, 0) >= since) or
+                      (LIGHT not in p and p.get(key) == "On" and
+                       self.last_update.get(key, 0) >= since),
+            5, "confirmación de luz " + target
+        )
+        return self.snapshot(props)
 
     def finish(self):
-        """Apagar, desconectar y detener solo el servidor propio.
-
-        Si no se puede confirmar el apagado, no se desconecta automáticamente
-        para no dejar la luz encendida sin control.
-        """
         props = self.properties()
         if props.get(CONN) == "On":
             self.set_light(False)
             self.set(DISC, "On")
-            self.wait_value(CONN, "Off", timeout=8)
-            logger.info("Panel desconectado")
+            self.wait_value(CONN, "Off", timeout=6)
         self.stop_owned()
         return "Servidor externo conservado" if self.server_alive() else "Servidor detenido"
 
@@ -341,7 +414,7 @@ class Controller:
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Control Flip Flat 1.0.0 — perfiles de brillo")
+        self.title("Control Flip Flat 1.1.1 — conexión rápida")
         self.geometry("850x730")
         self.minsize(680, 620)
         self.after_idle(self.maximize_window)
@@ -388,7 +461,7 @@ class App(tk.Tk):
         header = ttk.Frame(self)
         header.grid(row=0, column=0, padx=20, pady=(16, 10), sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="Optec / Alnitak Flip Flat — 1.0.0",
+        ttk.Label(header, text="Optec / Alnitak Flip Flat — 1.1.1",
                   font=("Sans", 19, "bold")).grid(row=0, column=0, sticky="w")
         self.night_toggle = ttk.Checkbutton(
             header, text="Modo nocturno (rojo)", variable=self.night_mode,
